@@ -1,0 +1,194 @@
+---
+title: 'Final Project: Practical Machine Learning'
+author: "John Cleveland"
+date: "July 27, 2016"
+output:
+  html_document:
+    theme: null
+    highlight: null
+    css: screen.css
+---    
+
+### Introduction
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+The goal of this project is to predict the manner of performing unilateral dumbbell biceps curls based on data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. The 5 possible methods include -
+
+* A: exactly according to the specification
+* B: throwing the elbows to the front
+* C: lifting the dumbbell only halfway
+* D: lowering the dumbbell only halfway
+* E: throwing the hips to the front
+
+### Data Cleaning and Preparation
+
+
+```{r  }
+# setwd("~/R_Scripts/Coursera/Practical Machine Learning")
+suppressMessages(library(caret)); suppressMessages(library(randomForest));suppressMessages(library(rpart));suppressMessages(library(rpart.plot));
+
+```
+
+
+```{r , cache=TRUE}
+train_data = read.csv("pml-training.csv", header =TRUE); train_data_used =train_data[, c(8:11, 37:49, 60:68, 84:86, 102,113:124, 140, 151:160)]; 
+
+validation_data = read.csv("pml-testing.csv", header =TRUE); 
+validation_data_used = validation_data[, c(8:11, 37:49, 60:68, 84:86, 102,113:124, 140, 151:160)]
+```
+
+The raw data in train_data comprised 19622 observations (rows) and 160 variables (columns)
+The reduced data set, train_data_used above comprises 53 variables. These variables result from discarding variables with NA's,variables with nearly zero variance and variables not relevant to predicting the accelerometers values of belt, forearm, arm and dumbell. For example, the first 7 variables are there simply for bookkeeping purposes with no predictive power whatsoever. We replicate this discarding in the validation set.
+
+## Data Partition for Out of Sample Error
+
+First we partition train_data_used into a training set and a testing set. This is done so that we can obtain an independent out of sample error. 
+
+
+
+```{r cache= TRUE}
+set.seed(123)
+sample <- createDataPartition(train_data_used$classe, p=0.7, list=FALSE);
+training <- train_data_used[sample, ]
+testing <- train_data_used[-sample, ]
+```
+
+ 
+
+
+
+## Cross Validation to help choose better model 
+
+We train a random forest and a rpart decision tree model using 3 fold cross validation. We use cross validation to see which is better with respect to the metric Accuracy. The better model will then be used to predict the labels for _testing_ . From this latter prediction we will obtain our out-of-sample-error.  
+
+
+```
+fitControl <- trainControl(method = "cv",
+                           number = 3)
+```
+
+
+```
+model_cart <- train(classe ~ ., data=training,
+  trControl=fitControl,
+  method='rpart'
+)
+
+model_rf <- train(classe ~ ., 
+  data=training,
+  method="rf",
+  trControl=fitControl,
+  ntree =100
+)  
+```
+The Accuracy for the cart model is dismal, however the random tree Accuracy is highly promising. We see that with mtry = 27 we obtain an accuracy of .9892. So we will use the random forest with mtry = 27.
+
+## Model Training and Parameter Tuning
+
+We will recast the caret package random forest model as a randomForest package random forest model. We do this so that we can access the methods *randomForest::importance()* and *randomForest::varImpPlot()*. We will look at a model trained on the most important covariates. Then we will train a model that has compensated for multicollinearity.
+
+#### Random Forest Model with 30 most important features
+
+```
+model_rf <- randomForest(classe ~., data=training, importance = TRUE, ntree= 100) # construct randomForest model random forest
+
+imp_features <-  names(sort(importance(model_rf)[ ,'MeanDecreaseAccuracy'])) # obtain important features
+
+imp_features <- head(imp_features,30) ; imp_features <- c(imp_features,'classe')
+
+varImpPlot(model_rf); # plot important features
+
+# Train random forest on only the 30 most important variables
+
+training_reduced <- training[,imp_features] # head(training_reduced); head(training)
+
+model_rf_reduced <- randomForest(classe ~ ., data=training_reduced, importance = TRUE, ntree= 100)
+
+```
+#### Random Forest Model compensated for multicollinearity 
+
+
+```{r cache=TRUE , echo= FALSE }
+
+training2 <- training; training2$classe <- NULL; 
+cor<- cor(training2) ;
+  highCorr <- findCorrelation(cor, 0.90); 
+
+  training_reduced <- training[, -highCorr]
+   testing_reduced <- testing[, -highCorr]
+
+```
+
+
+
+```
+# Random Forest model compensated for multicollinearity 
+
+model_rf <- randomForest(classe ~., data=training, importance = TRUE, ntree= 100);
+
+model_rf_reduced <- randomForest(classe ~ ., data=training_reduced, importance = TRUE, ntree= 100);
+
+model_rf_reduced ; model_rf
+
+```
+
+
+In the two previous subseections we tested two models. First we tested a model with only the 30 most important features then we  tested a model for covariates with correlation below $90\%$.  We notice that in both cases we obtain a model with less accuracy than the model with the full 53 covariates. Hence we use  the model with the 53 covariates and calculate the out-of-sample error using _testing_ data set.
+
+
+### Out of Sample Error
+
+```{r}
+model_rf <- randomForest(classe ~., data=training, importance = TRUE, ntree= 100);
+
+pred <- predict(model_rf, newdata=testing); confusionMatrix(pred, testing$classe);
+
+```
+
+Our out-of-sample-error $ 1- Accuracy < .55 % is very good. Now we will move on to the validation model trained with the data = training_data_used.
+
+## Validation
+
+```{r cache=TRUE}
+
+model_rf <- randomForest(classe ~., data= train_data_used, importance = TRUE, ntree= 100);
+
+pred_forest_validation <- predict(model_rf, newdata = validation_data_used); 
+
+```
+
+
+## Submission File
+
+```{r cache = TRUE}
+
+submission <- data.frame(validation_data_used$problem_id)
+submission$status_group <- pred_forest_validation
+names(submission)[1] <- "problem_id" ;submission
+```
+## Conclusion
+
+The goal of this project was to predict the manner in which the participants did the exercise. This is the "classe" variable in the training set. We ended up using 53 covariates, the explicit column numbers are listed and the most important 30 are graphed in the Appendix.We demonstrate how we built the model as a random forest. We initially chose the random forest because the professor told us they tended to do better than other models including more sophistacated ones. However we compared it with a decision tree because we needed to contrast it with another good modelling technique. We use k fold cross validation to aid in choosing between the two  models. K fold cross validation is a  good method to obtain a reasonable accuracy. I chose 3 due to a balance between effectiveness and time. We computed out of sample error for the training set obtaining less than $.55 \%$.Finally we predicted the validation set.  
+
+This report should be less than 2000 words with less than 5 figures.
+
+
+
+## Appendix
+
+```{r }
+model_rf <- randomForest(classe ~., data=training, importance = TRUE, ntree= 100) # construct randomForest model random forest
+
+imp_features <-  names(sort(importance(model_rf)[ ,'MeanDecreaseAccuracy'])) # obtain important features
+
+imp_features <- head(imp_features,30) ; imp_features <- c(imp_features,'classe')
+
+# Train random forest on only the 30 most important variables
+
+training_reduced <- training[,imp_features] # head(training_reduced); head(training)
+
+model_rf_reduced <- randomForest(classe ~ ., data=training_reduced, importance = TRUE, ntree= 100)
+varImpPlot(model_rf)
+
+```
+
